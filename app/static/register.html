@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Регистрация — StalSell</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="auth-container">
+        <h2>Регистрация сталкера</h2>
+        <form id="registerForm">
+            <input type="text" id="regUsername" placeholder="Имя пользователя" required>
+            <input type="email" id="regEmail" placeholder="Email" required>
+            <input type="password" id="regPassword" placeholder="Пароль" required>
+            <button type="submit">Создать аккаунт</button>
+        </form>
+        <p id="registerMessage" class="message"></p>
+        <p class="switch-auth">Уже есть аккаунт? <a href="/static/login.html">Войти</a></p>
+    </div>
+    <script src="/static/js/auth.js"></script>
+</body>
+</html>

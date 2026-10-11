@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+python-dotenv
+sqlalchemy
+httpx
+plotly
+jinja2
+passlib
+stalcraft-api

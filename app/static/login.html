@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Вход — StalSell</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="auth-container">
+        <h2>Вход в систему</h2>
+        <form id="loginForm">
+            <input type="text" id="loginUsername" placeholder="Имя пользователя" required>
+            <input type="password" id="loginPassword" placeholder="Пароль" required>
+            <button type="submit">Войти</button>
+        </form>
+        <p id="loginMessage" class="message"></p>
+        <p class="switch-auth">Нет аккаунта? <a href="/static/register.html">Зарегистрироваться</a></p>
+    </div>
+    <script src="/static/js/auth.js"></script>
+</body>
+</html>

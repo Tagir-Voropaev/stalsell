@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Предмет — StalSell</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+    <link rel="stylesheet" href="/static/css/style.css">
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+</head>
+
+<body>
+    <header class="top-header">
+        <div class="header-top">
+            <a href="/static/index.html" class="nav-link"><i class="bi bi-arrow-left"></i> На главную</a>
+            <a href="/static/login.html" class="nav-link" id="loginBtn">Войти</a>
+            <a href="#" class="nav-link" id="logoutBtn" style="display:none;">Выйти</a>
+        </div>
+        <h1 class="site-title">StalSell</h1>
+        <p class="site-subtitle">История аукциона STALZONE</p>
+    </header>
+
+    <main>
+        <!-- Поиск -->
+        <div class="search-wrapper" id="searchContainer">
+            <input type="text" id="searchInput" placeholder="Введите название предмета" autocomplete="off">
+            <button class="search-icon-btn" onclick="goToFirstSuggestion()" aria-label="Поиск">
+                <i class="bi bi-search"></i>
+            </button>
+            <div id="suggestions" class="suggestions" style="display:none;"></div>
+        </div>
+
+        <div class="main-grid">
+            <!-- График -->
+            <section class="chart-card">
+                <div class="chart-card-header">
+                    <h2 id="itemTitle">Загрузка...</h2>
+                    <p id="historyInfo" class="history-info"></p>
+                </div>
+
+                <div class="chart-container">
+                    <div id="chartSkeleton" class="chart-skeleton">
+                        <div class="skeleton-status">
+                            <div class="skeleton-spinner"></div>
+                            <span id="skeletonStatusText">Загружаем данные о предмете...</span>
+                        </div>
+                        <div class="skeleton-line skeleton-title"></div>
+                        <div class="skeleton-plot">
+                            <div class="skeleton-grid-line"></div>
+                            <div class="skeleton-grid-line"></div>
+                            <div class="skeleton-grid-line"></div>
+                            <div class="skeleton-grid-line"></div>
+                            <div class="skeleton-y-axis"></div>
+                        </div>
+                        <div class="skeleton-x-axis"></div>
+                    </div>
+
+                    <div id="emptyFilterMsg" class="empty-filter-msg" style="display:none;"></div>
+
+                    <div id="priceChart"></div>
+                </div>
+
+                <!-- Статус загрузки истории (без кнопки) -->
+                <div class="chart-load-more">
+                    <div id="loadMoreProgress" class="load-more-progress" style="display:none;">
+                        <div class="load-more-progress-bar"></div>
+                    </div>
+                    <p id="loadMoreChartInfo" class="load-more-info"></p>
+                </div>
+
+                <div class="chart-footer">
+                    <span id="refreshTime">Данные обновлены: —</span>
+                    <span class="chart-hint"><i class="bi bi-mouse"></i> Колёсико — масштаб · Тянуть — сдвиг</span>
+                </div>
+            </section>
+
+            <!-- Фильтры -->
+            <aside class="filters-panel">
+                <div class="filter-group">
+                    <h3 class="filter-title">Качество</h3>
+                    <div class="filter-buttons quality-buttons">
+                        <button class="q-btn" data-qlt="0">Обычный</button>
+                        <button class="q-btn" data-qlt="1">Необычный</button>
+                        <button class="q-btn" data-qlt="2">Особый</button>
+                        <button class="q-btn" data-qlt="3">Редкий</button>
+                        <button class="q-btn" data-qlt="4">Исключительный</button>
+                        <button class="q-btn" data-qlt="5">Легендарный</button>
+                    </div>
+                </div>
+
+                <div class="filter-group">
+                    <h3 class="filter-title">Тип</h3>
+                    <div class="filter-buttons level-buttons">
+                        <button class="lvl-btn" data-min="0" data-max="5">0-5</button>
+                        <button class="lvl-btn" data-min="6" data-max="10">6-10</button>
+                        <button class="lvl-btn" data-min="11" data-max="15">11-15</button>
+                    </div>
+                </div>
+
+                <div class="filter-group">
+                    <h3 class="filter-title">Статистика</h3>
+                    <div class="stats-panel">
+                        <div class="stat-row">
+                            <span class="stat-label">Средняя</span>
+                            <span class="stat-value" id="statAvg">—</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Макс.</span>
+                            <span class="stat-value" id="statMax">—</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Мин.</span>
+                            <span class="stat-value" id="statMin">—</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="filter-group actions-group">
+                    <button class="action-btn secondary" onclick="resetFilters()">
+                        <i class="bi bi-x-circle"></i> Сбросить фильтры
+                    </button>
+                    <button class="action-btn secondary" onclick="toggleTable()" id="toggleTableBtn">
+                        <i class="bi bi-table"></i> Показать таблицу
+                    </button>
+                </div>
+            </aside>
+        </div>
+
+    </main>
+
+    <div id="customTooltip" class="custom-tooltip"></div>
+
+    <!-- Модули (порядок важен!) -->
+    <script src="/static/js/utils.js"></script>
+    <script src="/static/js/chart.js"></script>
+    <script src="/static/js/filters.js"></script>
+    <script src="/static/js/history.js"></script>
+    <script src="/static/js/table.js"></script>
+    <script src="/static/js/search.js"></script>
+    <script src="/static/js/item.js"></script>
+</body>
+
+</html>

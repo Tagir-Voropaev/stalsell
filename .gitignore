@@ -1,0 +1,44 @@
+# Виртуальное окружение
+venv/
+env/
+ENV/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Секреты
+.env
+.env.local
+.env.*.local
+
+# База данных
+data/stalsell.db
+data/stalsell.db-journal
+data/stalsell.db-wal
+data/stalsell.db-shm
+
+# Логи
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Кэш предметов (большой файл, скачивается отдельно)
+# Раскомментируй, если не хочешь загружать:
+# data/items_cache.json
+# data/tradable_items.json
