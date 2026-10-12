@@ -1,4 +1,4 @@
-// --- РЕГИСТРАЦИЯ ---
+// ================== РЕГИСТРАЦИЯ ==================
 const registerForm = document.getElementById('registerForm');
 if (registerForm) {
     registerForm.addEventListener('submit', async (e) => {
@@ -17,9 +17,12 @@ if (registerForm) {
             const data = await response.json();
 
             if (response.ok) {
+                // 🔑 Сохраняем JWT-токен
+                localStorage.setItem('access_token', data.access_token);
+                localStorage.setItem('username', data.username);
                 messageEl.style.color = '#4CAF50';
-                messageEl.textContent = 'Успех! Перенаправление на вход...';
-                setTimeout(() => window.location.href = '/static/login.html', 1500);
+                messageEl.textContent = 'Успех! Перенаправление...';
+                setTimeout(() => window.location.href = '/static/index.html', 1000);
             } else {
                 messageEl.style.color = '#FF8C00';
                 messageEl.textContent = data.detail || 'Ошибка регистрации';
@@ -30,7 +33,7 @@ if (registerForm) {
     });
 }
 
-// --- ВХОД ---
+// ================== ВХОД ==================
 const loginForm = document.getElementById('loginForm');
 if (loginForm) {
     loginForm.addEventListener('submit', async (e) => {
@@ -48,12 +51,12 @@ if (loginForm) {
             const data = await response.json();
 
             if (response.ok) {
+                // 🔑 Сохраняем JWT-токен
+                localStorage.setItem('access_token', data.access_token);
+                localStorage.setItem('username', data.username);
                 messageEl.style.color = '#4CAF50';
                 messageEl.textContent = 'Вход выполнен! Перенаправление...';
-                // Сохраняем имя пользователя в память браузера
-                localStorage.setItem('username', data.username);
-                localStorage.setItem('user_id', data.user_id); // <-- Добавляем эту строку
-                setTimeout(() => window.location.href = '/static/index.html', 1000);
+                setTimeout(() => window.location.href = '/static/index.html', 800);
             } else {
                 messageEl.style.color = '#FF8C00';
                 messageEl.textContent = data.detail || 'Неверный логин или пароль';

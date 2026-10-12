@@ -6,4 +6,6 @@ httpx
 plotly
 jinja2
 passlib
+python-jose[cryptography]
+python-multipart
 stalcraft-api
