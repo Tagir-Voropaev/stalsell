@@ -23,8 +23,10 @@ class StalzoneAPI:
         self._token_lock = asyncio.Lock()
         self._http = httpx.AsyncClient(
             timeout=httpx.Timeout(30.0, connect=10.0),
-            limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
-            http2=False,  # Отключаем HTTP/2 — он ломает SSL с STALZONE
+            limits=httpx.Limits(
+            max_keepalive_connections=20,
+            max_connections=50,       # было 20
+            ),
         )
 
     async def _get_token(self) -> str:

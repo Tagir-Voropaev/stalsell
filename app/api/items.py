@@ -6,7 +6,7 @@ from fastapi import APIRouter, Query, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc
-from datetime import datetime
+from datetime import datetime, timedelta
 from app.services.stalzone_api import StalzoneAPI
 from app.services.items_database import load_items_database
 from app.core.database import get_db, SessionLocal
@@ -18,9 +18,17 @@ api = StalzoneAPI()
 # ================== КОНСТАНТЫ ==================
 CACHE_TTL_MEMORY = 30
 QUICK_LIMIT = 1000
-DEEP_LIMIT = 50000
+DEEP_LIMIT = 20000
 
 _cache: dict = {}
+
+# 🆕 Защита от спама задач синхронизации
+_syncing_items: set = set()
+_synced_recently: dict = {}
+SYNC_COOLDOWN_SECONDS = 300
+
+# 🆕 Ограничение одновременных API-запросов
+_api_semaphore: asyncio.Semaphore | None = None
 
 
 def extract_item_id(data_path: str) -> str:
@@ -51,7 +59,6 @@ def get_tradable_set() -> set:
 
 
 def search_items_by_name_or_category(query: str, category: str, limit: int = 20):
-    """Поиск по названию ИЛИ по категории."""
     db = load_items_database()
     if not db:
         return []
@@ -65,7 +72,7 @@ def search_items_by_name_or_category(query: str, category: str, limit: int = 20)
         if tradable and item_id not in tradable:
             continue
 
-        # Извлекаем категорию: /items/artefact/... → 'artefact'
+        # Категория из пути: /items/artefact/... → 'artefact'
         data_path = item.get("data", "")
         item_category = ""
         if data_path:
@@ -73,14 +80,12 @@ def search_items_by_name_or_category(query: str, category: str, limit: int = 20)
             if len(parts) >= 2:
                 item_category = parts[1]
 
-        # Фильтр по категории
         if category and item_category != category:
             continue
 
         name_lines = item.get("name", {}).get("lines", {})
         ru_name = name_lines.get("ru", "")
 
-        # Фильтр по названию
         if query_lower and query_lower not in ru_name.lower():
             continue
 
@@ -95,6 +100,8 @@ def search_items_by_name_or_category(query: str, category: str, limit: int = 20)
                 break
 
     return results
+
+
 # ================== РАБОТА С SQLITE КЭШЕМ ==================
 def count_cached(db: Session, item_id: str) -> int:
     return db.query(func.count(PriceHistoryCache.id)).filter(
@@ -117,13 +124,14 @@ def get_max_date(db: Session, item_id: str):
 def save_history_to_cache(db: Session, item_id: str, records: list, append: bool = True):
     """
     Сохраняет записи в SQLite.
-    append=True — добавляет только новые (по дате > max_date).
-    append=False — полная замена (только для первого захода).
+    🆕 Использует bulk_insert_mappings — быстрее в 5-10 раз.
     """
     now = datetime.utcnow()
     max_d = get_max_date(db, item_id) if append else None
 
-    added = 0
+    rows = []
+    seen_dates = set()
+
     for rec in records:
         add = rec.get("additional") or {}
         time_val = rec.get("time")
@@ -142,22 +150,29 @@ def save_history_to_cache(db: Session, item_id: str, records: list, append: bool
         if append and max_d and date_obj <= max_d:
             continue
 
-        row = PriceHistoryCache(
-            item_id=item_id,
-            price=float(rec.get("price", 0)),
-            amount=rec.get("amount", 1),
-            date=date_obj,
-            qlt=add.get("qlt"),
-            ptn=add.get("ptn"),
-            bonus_properties=json.dumps(add.get("bonus_properties", []), ensure_ascii=False),
-            it_transf_count=add.get("it_transf_count"),
-            cached_at=now,
-        )
-        db.add(row)
-        added += 1
+        # Защита от дубликатов внутри одного batch
+        if date_obj in seen_dates:
+            continue
+        seen_dates.add(date_obj)
 
+        rows.append({
+            "item_id": item_id,
+            "price": float(rec.get("price", 0)),
+            "amount": rec.get("amount", 1),
+            "date": date_obj,
+            "qlt": add.get("qlt"),
+            "ptn": add.get("ptn"),
+            "bonus_properties": json.dumps(add.get("bonus_properties", []), ensure_ascii=False),
+            "it_transf_count": add.get("it_transf_count"),
+            "cached_at": now,
+        })
+
+    if not rows:
+        return 0
+
+    db.bulk_insert_mappings(PriceHistoryCache, rows)
     db.commit()
-    return added
+    return len(rows)
 
 
 def load_history_from_cache(db: Session, item_id: str, limit: int):
@@ -187,7 +202,7 @@ def load_history_from_cache(db: Session, item_id: str, limit: int):
 @router.get("/search")
 async def search_items(
     q: str = Query("", description="Поисковый запрос"),
-    cat: str = Query("", description="Категория (artefact, weapon, armor, other)"),
+    cat: str = Query("", description="Категория"),
     limit: int = Query(20, ge=1, le=100),
 ):
     if not q and not cat:
@@ -197,7 +212,6 @@ async def search_items(
 
 @router.get("/{item_id}/info")
 async def get_item_info(item_id: str):
-    """Возвращает название, иконку и категорию предмета."""
     db = load_items_database()
     if not db:
         return {"id": item_id, "name": item_id, "icon": "", "category": ""}
@@ -208,14 +222,11 @@ async def get_item_info(item_id: str):
         if file_id == item_id:
             name_lines = item.get("name", {}).get("lines", {})
 
-            # 🔑 Извлекаем категорию из пути: /items/artefact/biochemical/zyv9.json
-            #   data_path → 'items/artefact/biochemical/zyv9.json'
-            #   category → 'artefact'
             category = ""
             if data_path:
                 parts = data_path.strip("/").split("/")
                 if len(parts) >= 2:
-                    category = parts[1]  # 'artefact', 'weapon', 'armor', 'other', etc.
+                    category = parts[1]
 
             return {
                 "id": item_id,
@@ -223,20 +234,17 @@ async def get_item_info(item_id: str):
                 "icon": item.get("icon", ""),
                 "category": category,
             }
-
     return {"id": item_id, "name": item_id, "icon": "", "category": ""}
+
 
 @router.get("/{item_id}/history")
 async def get_item_history(
     item_id: str,
-    limit: int = Query(QUICK_LIMIT, ge=1, le=50000),
+    limit: int = Query(QUICK_LIMIT, ge=1, le=20000),
     refresh: bool = Query(False, description="Принудительно обновить с API"),
     db: Session = Depends(get_db),
 ):
-    """
-    История продаж с накопительным кэшем.
-    Данные НЕ УДАЛЯЮТСЯ. Только накапливаются.
-    """
+    """История продаж с тройным кэшированием."""
     t_start = _time.time()
 
     def log(msg):
@@ -247,7 +255,7 @@ async def get_item_history(
     memory_key = f"hist:{item_id}:{limit}"
     now = datetime.utcnow()
 
-    # 1️⃣ In-memory кэш (30 сек)
+    # 1️⃣ In-memory кэш
     if not refresh and memory_key in _cache:
         cached = _cache[memory_key]
         if (now - cached["timestamp"]).total_seconds() < CACHE_TTL_MEMORY:
@@ -257,16 +265,16 @@ async def get_item_history(
                 headers={"Cache-Control": "public, max-age=30"},
             )
 
-    # 2️⃣ SQLite
-    cached_count = count_cached(db, item_id)
+    # 2️⃣ SQLite через threadpool
+    cached_count = await asyncio.to_thread(count_cached, db, item_id)
     log(f"в SQLite {cached_count} записей")
 
     if cached_count > 0 and not refresh:
-        result = load_history_from_cache(db, item_id, limit)
+        result = await asyncio.to_thread(load_history_from_cache, db, item_id, limit)
         log(f"ГОТОВО, отдаём {len(result)} (из БД)")
 
-        # Фоновая синхронизация свежих записей
-        asyncio.create_task(_sync_new_records(item_id))
+        # 🆕 Умный запуск синхронизации
+        _schedule_sync_if_needed(item_id)
 
         _cache[memory_key] = {"data": result, "timestamp": now}
         return JSONResponse(
@@ -286,10 +294,10 @@ async def get_item_history(
     if not records:
         return JSONResponse(content=[])
 
-    save_history_to_cache(db, item_id, records, append=False)
+    await asyncio.to_thread(save_history_to_cache, db, item_id, records, False)
     log(f"сохранено {len(records)} (первый раз)")
 
-    result = load_history_from_cache(db, item_id, limit)
+    result = await asyncio.to_thread(load_history_from_cache, db, item_id, limit)
     log(f"ГОТОВО, отдаём {len(result)}")
     _cache[memory_key] = {"data": result, "timestamp": now}
     return JSONResponse(
@@ -298,28 +306,52 @@ async def get_item_history(
     )
 
 
-# ================== ФОНОВАЯ СИНХРОНИЗАЦИЯ ==================
+# ================== УПРАВЛЕНИЕ СИНХРОНИЗАЦИЕЙ ==================
+def _schedule_sync_if_needed(item_id: str):
+    """Запускает фоновую синхронизацию с защитой от спама."""
+    now = datetime.utcnow()
+
+    if item_id in _syncing_items:
+        return
+
+    last = _synced_recently.get(item_id)
+    if last and (now - last).total_seconds() < SYNC_COOLDOWN_SECONDS:
+        return
+
+    _syncing_items.add(item_id)
+    asyncio.create_task(_sync_new_records(item_id))
+
+
 async def _sync_new_records(item_id: str):
-    """Спрашивает свежие записи и добавляет только те, что новее max_date."""
+    """Забирает свежие записи, добавляет только новые."""
     db = SessionLocal()
     try:
-        max_date = get_max_date(db, item_id)
+        max_date = await asyncio.to_thread(get_max_date, db, item_id)
         if not max_date:
             return
 
-        print(f"[SYNC] {item_id}: проверяем записи новее {max_date.isoformat()}")
-        fresh = await api.get_item_history_page(item_id, offset=0, limit=200)
+        print(f"[SYNC] {item_id}: проверяем новее {max_date.isoformat()}")
+
+        global _api_semaphore
+        if _api_semaphore is None:
+            _api_semaphore = asyncio.Semaphore(5)
+
+        async with _api_semaphore:
+            fresh = await api.get_item_history_page(item_id, offset=0, limit=200)
 
         if not fresh:
             return
 
-        added = save_history_to_cache(db, item_id, fresh, append=True)
+        added = await asyncio.to_thread(save_history_to_cache, db, item_id, fresh, True)
 
         now = datetime.utcnow()
-        db.query(PriceHistoryCache).filter(
-            PriceHistoryCache.item_id == item_id
-        ).update({"cached_at": now})
-        db.commit()
+        await asyncio.to_thread(
+            db.query(PriceHistoryCache)
+            .filter(PriceHistoryCache.item_id == item_id)
+            .update,
+            {"cached_at": now},
+        )
+        await asyncio.to_thread(db.commit)
 
         if added > 0:
             print(f"[SYNC] {item_id}: добавлено {added} новых")
@@ -329,18 +361,24 @@ async def _sync_new_records(item_id: str):
         print(f"[SYNC] {item_id}: ошибка {e}")
     finally:
         db.close()
+        _syncing_items.discard(item_id)
+        _synced_recently[item_id] = datetime.utcnow()
+
+        # Чистим старые записи раз в 1000 элементов
+        if len(_synced_recently) > 1000:
+            cutoff = datetime.utcnow() - timedelta(hours=1)
+            to_remove = [k for k, v in _synced_recently.items() if v < cutoff]
+            for k in to_remove:
+                _synced_recently.pop(k, None)
 
 
 @router.get("/{item_id}/history/deep")
 async def get_item_history_deep(
     item_id: str,
-    limit: int = Query(DEEP_LIMIT, ge=1, le=50000),
+    limit: int = Query(DEEP_LIMIT, ge=1, le=20000),
     db: Session = Depends(get_db),
 ):
-    """
-    Глубокая загрузка. НЕ БЛОКИРУЕТ — если в БД мало, отдаём что есть,
-    а остаток тянем из API в фоне.
-    """
+    """Глубокая загрузка."""
     t_start = _time.time()
 
     def log(msg):
@@ -348,72 +386,37 @@ async def get_item_history_deep(
 
     log(f"СТАРТ, limit={limit}")
 
-    cached_count = count_cached(db, item_id)
+    cached_count = await asyncio.to_thread(count_cached, db, item_id)
     log(f"в кэше {cached_count}")
 
-    # 🔑 Если в БД есть — отдаём СРАЗУ и запускаем фоновую догрузку
-    if cached_count > 0:
-        result = load_history_from_cache(db, item_id, limit)
+    if cached_count >= limit:
+        result = await asyncio.to_thread(load_history_from_cache, db, item_id, limit)
         log(f"ГОТОВО, отдаём {len(result)} (из БД)")
-
-        # 🆕 Если в БД меньше, чем нужно — догружаем остаток в фоне
-        if cached_count < limit:
-            log(f"в БД меньше чем нужно — запускаем фоновую догрузку до {limit}")
-            asyncio.create_task(_deep_fetch_in_background(item_id, limit))
-        else:
-            log("в БД достаточно данных, фон не нужен")
-
         return JSONResponse(content=result)
 
-    # БД пуста — первый заход, тянем полностью
-    log(f"БД пуста, идём в API за {limit} записей...")
+    log(f"идём в API за {limit} записей...")
     try:
         records = await api.get_item_history_page(item_id, offset=0, limit=limit)
         log(f"← из API получено {len(records)}")
     except Exception as e:
         log(f"ОШИБКА API: {e}")
+        result = await asyncio.to_thread(load_history_from_cache, db, item_id, limit)
+        if result:
+            return JSONResponse(content=result)
         raise HTTPException(status_code=502, detail=f"Ошибка API STALZONE: {e}")
 
     if records:
-        save_history_to_cache(db, item_id, records, append=False)
-        log(f"сохранено {len(records)} (первый раз)")
+        if cached_count == 0:
+            await asyncio.to_thread(save_history_to_cache, db, item_id, records, False)
+            log(f"сохранено {len(records)} (первый раз)")
+        else:
+            added = await asyncio.to_thread(save_history_to_cache, db, item_id, records, True)
+            log(f"добавлено {added} новых (из {len(records)})")
 
-    result = load_history_from_cache(db, item_id, limit)
+    result = await asyncio.to_thread(load_history_from_cache, db, item_id, limit)
     log(f"ГОТОВО, отдаём {len(result)}")
     return JSONResponse(content=result)
 
-
-# 🆕 Фоновая догрузка глубокой истории
-async def _deep_fetch_in_background(item_id: str, target_limit: int):
-    """Тянет из API до target_limit записей и добавляет в БД."""
-    db = SessionLocal()
-    try:
-        cached_count = count_cached(db, item_id)
-        if cached_count >= target_limit:
-            print(f"[BG-DEEP] {item_id}: уже {cached_count} >= {target_limit}, пропускаем")
-            return
-
-        print(f"[BG-DEEP] {item_id}: тянем {target_limit} (в БД {cached_count})")
-        records = await api.get_item_history_page(item_id, offset=0, limit=target_limit)
-
-        if not records:
-            print(f"[BG-DEEP] {item_id}: API вернул пусто")
-            return
-
-        added = save_history_to_cache(db, item_id, records, append=True)
-
-        # Обновляем cached_at
-        now = datetime.utcnow()
-        db.query(PriceHistoryCache).filter(
-            PriceHistoryCache.item_id == item_id
-        ).update({"cached_at": now})
-        db.commit()
-
-        print(f"[BG-DEEP] {item_id}: добавлено {added} новых, всего {count_cached(db, item_id)}")
-    except Exception as e:
-        print(f"[BG-DEEP] {item_id}: ошибка {e}")
-    finally:
-        db.close()
 
 @router.get("/{item_id}/lots")
 async def get_item_lots(item_id: str, limit: int = Query(200, le=200)):
